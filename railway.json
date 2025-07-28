@@ -1,0 +1,14 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "NIXPACKS"
+  },
+  "deploy": {
+    "startCommand": "gunicorn --bind 0.0.0.0:$PORT 'src.main:create_app()'"
+  },
+  "variables": {
+    "FLASK_ENV": "production",
+    "PYTHONPATH": "/app"
+  }
+}
+
