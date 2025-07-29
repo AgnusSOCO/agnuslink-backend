@@ -8,28 +8,27 @@ from typing import Dict, Optional, Any
 logger = logging.getLogger(__name__)
 
 class SignNowService:
-    """SignNow API integration service"""
-    
     def __init__(self):
-        self.client_id = os.environ.get('SIGNNOW_CLIENT_ID')
-        self.client_secret = os.environ.get('SIGNNOW_CLIENT_SECRET')
-        self.api_base = os.environ.get('SIGNNOW_API_BASE', 'https://api.signnow.com')
-        self.template_id = os.environ.get('SIGNNOW_TEMPLATE_ID')
+        self.client_id = os.getenv('SIGNNOW_CLIENT_ID')
+        self.client_secret = os.getenv('SIGNNOW_CLIENT_SECRET')
+        self.api_base = os.getenv('SIGNNOW_API_BASE', 'https://api.signnow.com')
+        self.template_id = os.getenv('SIGNNOW_TEMPLATE_ID')
         self.access_token = None
         self.token_expires_at = None
         
         if not all([self.client_id, self.client_secret, self.template_id]):
             logger.warning("SignNow credentials not fully configured")
     
-    def _get_access_token(self) -> Optional[str]:
+    def is_available(self) -> bool:
+        """Check if SignNow service is properly configured"""
+        return all([self.client_id, self.client_secret, self.template_id])
+    
+    def get_access_token(self) -> Optional[str]:
         """Get or refresh access token"""
+        if self.access_token and self.token_expires_at and datetime.now() < self.token_expires_at:
+            return self.access_token
+        
         try:
-            # Check if current token is still valid
-            if (self.access_token and self.token_expires_at and 
-                datetime.utcnow() < self.token_expires_at):
-                return self.access_token
-            
-            # Request new token
             url = f"{self.api_base}/oauth2/token"
             data = {
                 'grant_type': 'client_credentials',
@@ -42,282 +41,228 @@ class SignNowService:
             
             token_data = response.json()
             self.access_token = token_data['access_token']
+            # Set expiration to 1 hour from now (tokens typically last longer)
+            self.token_expires_at = datetime.now() + timedelta(hours=1)
             
-            # Set expiration time (subtract 5 minutes for safety)
-            expires_in = token_data.get('expires_in', 3600)
-            self.token_expires_at = datetime.utcnow() + timedelta(seconds=expires_in - 300)
-            
-            logger.info("SignNow access token obtained successfully")
+            logger.info("Successfully obtained SignNow access token")
             return self.access_token
             
         except Exception as e:
             logger.error(f"Failed to get SignNow access token: {e}")
             return None
     
-    def _make_request(self, method: str, endpoint: str, **kwargs) -> Optional[Dict]:
-        """Make authenticated request to SignNow API"""
+    def create_document_from_template(self, user_data: Dict[str, Any]) -> Optional[str]:
+        """Create a document from template"""
+        if not self.is_available():
+            logger.error("SignNow service not available")
+            return None
+            
+        token = self.get_access_token()
+        if not token:
+            return None
+        
         try:
-            token = self._get_access_token()
-            if not token:
-                return None
+            url = f"{self.api_base}/v2/templates/{self.template_id}/documents"
+            headers = {
+                'Authorization': f'Bearer {token}',
+                'Content-Type': 'application/json'
+            }
             
-            url = f"{self.api_base}{endpoint}"
-            headers = kwargs.get('headers', {})
-            headers['Authorization'] = f'Bearer {token}'
-            kwargs['headers'] = headers
+            # Create document from template with user data
+            data = {
+                'document_name': f"Finder's Fee Contract - {user_data.get('first_name', '')} {user_data.get('last_name', '')}",
+                'prefill_fields': {
+                    'signer_name': f"{user_data.get('first_name', '')} {user_data.get('last_name', '')}",
+                    'signer_email': user_data.get('email', ''),
+                    'date': datetime.now().strftime('%Y-%m-%d')
+                }
+            }
             
-            response = requests.request(method, url, **kwargs)
+            response = requests.post(url, headers=headers, json=data)
             response.raise_for_status()
             
-            return response.json() if response.content else {}
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"SignNow API request failed: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                logger.error(f"Response content: {e.response.text}")
-            return None
-    
-    def create_document_from_template(self, user_data: Dict[str, Any]) -> Optional[Dict]:
-        """Create a document from template for user to sign"""
-        try:
-            if not self.template_id:
-                logger.error("SignNow template ID not configured")
-                return None
-            
-            # Prepare document data
-            document_name = f"Finder's Fee Contract - {user_data.get('first_name', '')} {user_data.get('last_name', '')}"
-            
-            # Create document from template
-            endpoint = f"/template/{self.template_id}/copy"
-            data = {
-                'document_name': document_name
-            }
-            
-            result = self._make_request('POST', endpoint, json=data)
-            if not result:
-                return None
-            
+            result = response.json()
             document_id = result.get('id')
-            if not document_id:
-                logger.error("No document ID returned from template copy")
-                return None
             
-            logger.info(f"Document created from template: {document_id}")
-            
-            # Pre-fill document fields if needed
-            self._prefill_document_fields(document_id, user_data)
-            
-            return {
-                'document_id': document_id,
-                'document_name': document_name,
-                'template_id': self.template_id
-            }
+            logger.info(f"Created document from template: {document_id}")
+            return document_id
             
         except Exception as e:
             logger.error(f"Failed to create document from template: {e}")
             return None
     
-    def _prefill_document_fields(self, document_id: str, user_data: Dict[str, Any]) -> bool:
-        """Pre-fill document fields with user data"""
+    def create_embedded_signing_invite(self, document_id: str, user_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Create embedded signing invite for a document"""
+        if not self.is_available():
+            return {"error": "SignNow service not configured"}
+            
+        token = self.get_access_token()
+        if not token:
+            return {"error": "Failed to get access token"}
+        
         try:
-            # Get document fields
-            endpoint = f"/document/{document_id}/fields"
-            fields_result = self._make_request('GET', endpoint)
-            
-            if not fields_result:
-                logger.warning("Could not get document fields for pre-filling")
-                return False
-            
-            # Prepare field updates
-            field_updates = []
-            
-            # Map user data to common field names
-            field_mappings = {
-                'full_name': f"{user_data.get('first_name', '')} {user_data.get('last_name', '')}".strip(),
-                'first_name': user_data.get('first_name', ''),
-                'last_name': user_data.get('last_name', ''),
-                'email': user_data.get('email', ''),
-                'phone': user_data.get('phone', ''),
-                'date': datetime.utcnow().strftime('%Y-%m-%d')
+            # First, get the document to find role IDs
+            doc_url = f"{self.api_base}/v2/documents/{document_id}"
+            headers = {
+                'Authorization': f'Bearer {token}',
+                'Content-Type': 'application/json'
             }
             
-            # Update fields that exist in the document
-            fields = fields_result.get('fields', [])
-            for field in fields:
-                field_name = field.get('name', '').lower()
-                if field_name in field_mappings and field_mappings[field_name]:
-                    field_updates.append({
-                        'field_id': field.get('id'),
-                        'data': field_mappings[field_name]
-                    })
+            doc_response = requests.get(doc_url, headers=headers)
+            doc_response.raise_for_status()
+            doc_data = doc_response.json()
             
-            # Apply field updates if any
-            if field_updates:
-                update_endpoint = f"/document/{document_id}/fields"
-                update_data = {'fields': field_updates}
+            # Find the first role (assuming single signer)
+            roles = doc_data.get('roles', [])
+            if not roles:
+                return {"error": "No roles found in document"}
+            
+            role_id = roles[0].get('id')
+            
+            # Create embedded invite
+            invite_url = f"{self.api_base}/v2/documents/{document_id}/embedded-invites"
+            
+            invite_data = {
+                "invites": [
+                    {
+                        "email": user_data.get('email'),
+                        "role_id": role_id,
+                        "order": 1,
+                        "auth_method": "none",  # No additional authentication
+                        "first_name": user_data.get('first_name', ''),
+                        "last_name": user_data.get('last_name', ''),
+                        "redirect_uri": f"https://agnusfrontend.vercel.app/onboarding?step=signature-complete"
+                    }
+                ]
+            }
+            
+            response = requests.post(invite_url, headers=headers, json=invite_data)
+            response.raise_for_status()
+            
+            result = response.json()
+            invite_id = result.get('data', [{}])[0].get('id')
+            
+            if invite_id:
+                logger.info(f"Created embedded invite: {invite_id}")
+                return {
+                    "invite_id": invite_id,
+                    "document_id": document_id,
+                    "role_id": role_id
+                }
+            else:
+                return {"error": "Failed to create invite"}
                 
-                update_result = self._make_request('PUT', update_endpoint, json=update_data)
-                if update_result:
-                    logger.info(f"Pre-filled {len(field_updates)} fields in document {document_id}")
-                    return True
-            
-            return True
-            
         except Exception as e:
-            logger.error(f"Failed to pre-fill document fields: {e}")
-            return False
+            logger.error(f"Failed to create embedded invite: {e}")
+            return {"error": str(e)}
     
-    def create_signing_link(self, document_id: str, user_data: Dict[str, Any]) -> Optional[Dict]:
-        """Create a signing link for the user"""
+    def generate_embedded_signing_link(self, invite_id: str) -> Optional[str]:
+        """Generate embedded signing link"""
+        if not self.is_available():
+            return None
+            
+        token = self.get_access_token()
+        if not token:
+            return None
+        
         try:
-            endpoint = f"/document/{document_id}/invite"
+            url = f"{self.api_base}/v2/documents/embedded-invites/{invite_id}/link"
+            headers = {
+                'Authorization': f'Bearer {token}',
+                'Content-Type': 'application/json'
+            }
             
-            # Prepare signing invitation
             data = {
-                'to': [{
-                    'email': user_data.get('email'),
-                    'role_id': '',
-                    'role': 'Signer',
-                    'order': 1,
-                    'expiration_days': 30,
-                    'reminder': 1
-                }],
-                'from': user_data.get('email'),
-                'subject': 'Please sign your Finder\'s Fee Contract',
-                'message': 'Please review and sign the attached Finder\'s Fee Contract to complete your onboarding.'
+                "auth_method": "password",
+                "link_expiration": 45  # 45 minutes
             }
             
-            result = self._make_request('POST', endpoint, json=data)
-            if not result:
-                return None
+            response = requests.post(url, headers=headers, json=data)
+            response.raise_for_status()
             
-            # Get the signing URL
-            signing_url = result.get('data', [{}])[0].get('link')
+            result = response.json()
+            signing_link = result.get('link')
             
-            if not signing_url:
-                logger.error("No signing URL returned from invite")
-                return None
-            
-            logger.info(f"Signing link created for document {document_id}")
-            
-            return {
-                'signing_url': signing_url,
-                'document_id': document_id,
-                'expires_in_days': 30
-            }
+            logger.info(f"Generated embedded signing link for invite: {invite_id}")
+            return signing_link
             
         except Exception as e:
-            logger.error(f"Failed to create signing link: {e}")
+            logger.error(f"Failed to generate signing link: {e}")
             return None
     
-    def get_document_status(self, document_id: str) -> Optional[Dict]:
+    def get_document_status(self, document_id: str) -> Dict[str, Any]:
         """Get document signing status"""
+        if not self.is_available():
+            return {"status": "error", "message": "SignNow service not configured"}
+            
+        token = self.get_access_token()
+        if not token:
+            return {"status": "error", "message": "Failed to get access token"}
+        
         try:
-            endpoint = f"/document/{document_id}"
-            result = self._make_request('GET', endpoint)
+            url = f"{self.api_base}/v2/documents/{document_id}"
+            headers = {
+                'Authorization': f'Bearer {token}',
+                'Content-Type': 'application/json'
+            }
             
-            if not result:
-                return None
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
             
-            # Parse document status
-            status = result.get('status', 'pending')
-            signatures = result.get('signatures', [])
+            result = response.json()
             
-            # Determine if document is fully signed
-            is_signed = status == 'completed' or all(
-                sig.get('status') == 'signed' for sig in signatures
-            )
+            # Check if document is signed
+            is_signed = result.get('status') == 'completed'
             
             return {
-                'document_id': document_id,
-                'status': status,
-                'is_signed': is_signed,
-                'signatures': signatures,
-                'last_updated': datetime.utcnow().isoformat()
+                "status": "completed" if is_signed else "pending",
+                "document_id": document_id,
+                "signed_date": result.get('updated') if is_signed else None,
+                "signers": result.get('roles', [])
             }
             
         except Exception as e:
             logger.error(f"Failed to get document status: {e}")
-            return None
+            return {"status": "error", "message": str(e)}
     
-    def create_embedded_signing_link(self, document_id: str, user_data: Dict[str, Any]) -> Optional[Dict]:
-        """Create an embedded signing link for seamless integration"""
-        try:
-            endpoint = f"/document/{document_id}/embedded-invite"
-            
-            data = {
-                'to': [{
-                    'email': user_data.get('email'),
-                    'role_id': '',
-                    'role': 'Signer',
-                    'order': 1
-                }],
-                'from': user_data.get('email'),
-                'subject': 'Finder\'s Fee Contract Signature Required'
+    def create_complete_signing_flow(self, user_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Complete flow: create document, invite, and generate link"""
+        if not self.is_available():
+            return {
+                "success": False,
+                "error": "SignNow service not configured. Please add SIGNNOW_CLIENT_ID, SIGNNOW_CLIENT_SECRET, and SIGNNOW_TEMPLATE_ID to environment variables."
             }
+        
+        try:
+            # Step 1: Create document from template
+            document_id = self.create_document_from_template(user_data)
+            if not document_id:
+                return {"success": False, "error": "Failed to create document"}
             
-            result = self._make_request('POST', endpoint, json=data)
-            if not result:
-                return None
+            # Step 2: Create embedded invite
+            invite_result = self.create_embedded_signing_invite(document_id, user_data)
+            if "error" in invite_result:
+                return {"success": False, "error": invite_result["error"]}
             
-            # Get embedded signing data
-            embedded_data = result.get('data', [{}])[0]
-            signing_url = embedded_data.get('link')
+            invite_id = invite_result["invite_id"]
             
-            if not signing_url:
-                logger.error("No embedded signing URL returned")
-                return None
-            
-            logger.info(f"Embedded signing link created for document {document_id}")
+            # Step 3: Generate signing link
+            signing_link = self.generate_embedded_signing_link(invite_id)
+            if not signing_link:
+                return {"success": False, "error": "Failed to generate signing link"}
             
             return {
-                'signing_url': signing_url,
-                'document_id': document_id,
-                'embedded': True,
-                'expires_in_days': 30
+                "success": True,
+                "document_id": document_id,
+                "invite_id": invite_id,
+                "signing_link": signing_link,
+                "message": "Document ready for signing"
             }
             
         except Exception as e:
-            logger.error(f"Failed to create embedded signing link: {e}")
-            return None
-    
-    def setup_webhook(self, webhook_url: str) -> bool:
-        """Setup webhook for document status updates"""
-        try:
-            endpoint = "/webhook"
-            
-            data = {
-                'event': 'document.complete',
-                'callback_url': webhook_url,
-                'use_tls_12': True
-            }
-            
-            result = self._make_request('POST', endpoint, json=data)
-            
-            if result:
-                logger.info(f"Webhook setup successful: {webhook_url}")
-                return True
-            
-            return False
-            
-        except Exception as e:
-            logger.error(f"Failed to setup webhook: {e}")
-            return False
-    
-    def is_configured(self) -> bool:
-        """Check if SignNow service is properly configured"""
-        return all([
-            self.client_id,
-            self.client_secret,
-            self.template_id
-        ])
-    
-    def test_connection(self) -> bool:
-        """Test SignNow API connection"""
-        try:
-            token = self._get_access_token()
-            return token is not None
-        except Exception as e:
-            logger.error(f"SignNow connection test failed: {e}")
-            return False
+            logger.error(f"Failed to create complete signing flow: {e}")
+            return {"success": False, "error": str(e)}
+
+# Global instance
+signnow_service = SignNowService()
 
