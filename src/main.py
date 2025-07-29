@@ -2,6 +2,7 @@ from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import text
 import os
 import logging
 
@@ -146,8 +147,9 @@ def create_app():
     logger.info("Creating database tables...")
     with app.app_context():
         try:
-            # Test database connection
-            db.engine.execute('SELECT 1')
+            # Test database connection (SQLAlchemy 2.x compatible)
+            with db.engine.connect() as connection:
+                connection.execute(text('SELECT 1'))
             logger.info("✅ Database connection successful")
             
             # Drop all tables (clean slate)
@@ -158,13 +160,15 @@ def create_app():
             logger.info("Creating new tables...")
             db.create_all()
             
-            # Verify tables were created
+            # Verify tables were created (SQLAlchemy 2.x compatible)
             inspector = db.inspect(db.engine)
             tables = inspector.get_table_names()
             logger.info(f"✅ Tables created successfully: {tables}")
             
             if not tables:
                 logger.error("❌ No tables were created!")
+            else:
+                logger.info(f"✅ Created {len(tables)} tables: {', '.join(tables)}")
             
         except Exception as e:
             logger.error(f"❌ Database error: {e}")
@@ -175,9 +179,10 @@ def create_app():
     def health_check():
         """Health check endpoint"""
         try:
-            # Test database connection
+            # Test database connection (SQLAlchemy 2.x compatible)
             with app.app_context():
-                db.engine.execute('SELECT 1')
+                with db.engine.connect() as connection:
+                    connection.execute(text('SELECT 1'))
             db_status = "healthy"
         except Exception as e:
             db_status = f"error: {str(e)}"
@@ -218,6 +223,35 @@ def create_app():
                     'total_tables': len(tables)
                 })
         except Exception as e:
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/debug/create-tables')
+    def force_create_tables():
+        """Force create tables endpoint"""
+        try:
+            with app.app_context():
+                logger.info("Force creating tables...")
+                
+                # Drop all tables
+                db.drop_all()
+                logger.info("Tables dropped")
+                
+                # Create all tables
+                db.create_all()
+                logger.info("Tables created")
+                
+                # Verify tables
+                inspector = db.inspect(db.engine)
+                tables = inspector.get_table_names()
+                
+                return jsonify({
+                    'success': True,
+                    'message': 'Tables created successfully',
+                    'tables': tables,
+                    'total_tables': len(tables)
+                })
+        except Exception as e:
+            logger.error(f"Error force creating tables: {e}")
             return jsonify({'error': str(e)}), 500
     
     logger.info("Flask app created successfully!")
