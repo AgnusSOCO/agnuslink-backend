@@ -28,6 +28,17 @@ class User(db.Model):
     is_verified = db.Column(db.Boolean, default=False)
     government_id_url = db.Column(db.String(255))
     
+    # Onboarding fields
+    onboarding_status = db.Column(db.String(50), default='pending')  # 'pending', 'documents_signed', 'kyc_submitted', 'kyc_approved', 'completed', 'rejected'
+    onboarding_step = db.Column(db.Integer, default=1)
+    kyc_status = db.Column(db.String(50), default='pending')  # 'pending', 'submitted', 'approved', 'rejected', 'requires_resubmission'
+    kyc_rejection_reason = db.Column(db.Text)
+    
+    # Agreement tracking
+    agreements_complete = db.Column(db.Boolean, default=False)
+    affiliate_agreement_signed = db.Column(db.Boolean, default=False)
+    finders_fee_contract_signed = db.Column(db.Boolean, default=False)
+    
     # Referral Information
     referral_code = db.Column(db.String(20), unique=True)
     referred_by_id = db.Column(db.Integer, db.ForeignKey('users.id'))
@@ -54,6 +65,40 @@ class User(db.Model):
             if not User.query.filter_by(referral_code=code).first():
                 return code
     
+    @property
+    def missing_agreements(self):
+        """Return list of missing agreements"""
+        missing = []
+        if not self.affiliate_agreement_signed:
+            missing.append('affiliate_agreement')
+        if not self.finders_fee_contract_signed:
+            missing.append('finders_fee_contract')
+        return missing
+    
+    @property
+    def onboarding_complete(self):
+        """Check if onboarding is complete"""
+        return (self.onboarding_status == 'completed' and 
+                self.kyc_status == 'approved' and 
+                self.agreements_complete)
+    
+    @property
+    def can_access_dashboard(self):
+        """Check if user can access full dashboard"""
+        return self.onboarding_complete and self.is_verified
+    
+    def update_onboarding_status(self):
+        """Update onboarding status based on current state"""
+        if self.finders_fee_contract_signed and self.kyc_status != 'submitted':
+            self.onboarding_status = 'documents_signed'
+        elif self.kyc_status == 'submitted':
+            self.onboarding_status = 'kyc_submitted'
+        elif self.kyc_status == 'approved' and self.finders_fee_contract_signed:
+            self.onboarding_status = 'completed'
+            self.agreements_complete = True
+        elif self.kyc_status == 'rejected':
+            self.onboarding_status = 'rejected'
+    
     def __repr__(self):
         return f'<User {self.email}>'
     
@@ -67,6 +112,16 @@ class User(db.Model):
             'phone': self.phone,
             'is_verified': self.is_verified,
             'referral_code': self.referral_code,
+            'onboarding_status': self.onboarding_status,
+            'onboarding_step': self.onboarding_step,
+            'kyc_status': self.kyc_status,
+            'kyc_rejection_reason': self.kyc_rejection_reason,
+            'agreements_complete': self.agreements_complete,
+            'affiliate_agreement_signed': self.affiliate_agreement_signed,
+            'finders_fee_contract_signed': self.finders_fee_contract_signed,
+            'missing_agreements': self.missing_agreements,
+            'onboarding_complete': self.onboarding_complete,
+            'can_access_dashboard': self.can_access_dashboard,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'last_login': self.last_login.isoformat() if self.last_login else None
         }
@@ -109,3 +164,4 @@ class User(db.Model):
             status='pending'
         ).scalar()
         return float(total) if total else 0.0
+
