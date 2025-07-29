@@ -1,256 +1,93 @@
-from flask import Blueprint, request, jsonify, current_app
-from flask_jwt_extended import jwt_required, get_jwt_identity
-from src.database import db
-from src.models.user import User
-from src.models.onboarding import DocumentSignature, KYCDocument, OnboardingStep
 from datetime import datetime
-import os
+from src.database import db
 
-onboarding_bp = Blueprint('onboarding', __name__)
+class DocumentSignature(db.Model):
+    __tablename__ = 'document_signatures'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    document_type = db.Column(db.String(50), nullable=False)  # 'finders_fee_contract', 'affiliate_agreement'
+    signnow_document_id = db.Column(db.String(255))
+    signnow_template_id = db.Column(db.String(255))
+    signature_status = db.Column(db.Enum('pending', 'sent', 'signed', 'completed', 'declined', name='signature_status'), default='pending')
+    signed_at = db.Column(db.DateTime)
+    document_url = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationship
+    user = db.relationship('User', backref='document_signatures')
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'document_type': self.document_type,
+            'signnow_document_id': self.signnow_document_id,
+            'signature_status': self.signature_status,
+            'signed_at': self.signed_at.isoformat() if self.signed_at else None,
+            'document_url': self.document_url,
+            'created_at': self.created_at.isoformat(),
+            'updated_at': self.updated_at.isoformat()
+        }
 
-@onboarding_bp.route('/status', methods=['GET'])
-@jwt_required()
-def get_onboarding_status():
-    """Get current user's onboarding status"""
-    try:
-        user_id = get_jwt_identity()
-        user = User.query.get(user_id)
-        
-        if not user:
-            return jsonify({'error': 'User not found'}), 404
-        
-        # Get onboarding steps
-        steps = OnboardingStep.query.filter_by(user_id=user_id).all()
-        
-        # Get document signatures
-        signatures = DocumentSignature.query.filter_by(user_id=user_id).all()
-        
-        # Get KYC documents
-        kyc_docs = KYCDocument.query.filter_by(user_id=user_id).all()
-        
-        return jsonify({
-            'success': True,
-            'user': user.to_dict(),
-            'steps': [step.to_dict() for step in steps],
-            'signatures': [sig.to_dict() for sig in signatures],
-            'kyc_documents': [doc.to_dict() for doc in kyc_docs]
-        })
-        
-    except Exception as e:
-        current_app.logger.error(f"Error getting onboarding status: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
+class KYCDocument(db.Model):
+    __tablename__ = 'kyc_documents'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    document_type = db.Column(db.Enum('government_id', 'proof_of_address', 'selfie_with_id', name='kyc_document_type'), nullable=False)
+    file_path = db.Column(db.String(255), nullable=False)
+    file_name = db.Column(db.String(255), nullable=False)
+    file_size = db.Column(db.Integer)
+    mime_type = db.Column(db.String(100))
+    verification_status = db.Column(db.Enum('pending', 'approved', 'rejected', name='verification_status'), default='pending')
+    rejection_reason = db.Column(db.Text)
+    uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
+    reviewed_at = db.Column(db.DateTime)
+    reviewed_by = db.Column(db.Integer, db.ForeignKey('users.id'))
+    
+    # Relationships
+    user = db.relationship('User', foreign_keys=[user_id], backref='kyc_documents')
+    reviewer = db.relationship('User', foreign_keys=[reviewed_by])
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'document_type': self.document_type,
+            'file_name': self.file_name,
+            'file_size': self.file_size,
+            'mime_type': self.mime_type,
+            'verification_status': self.verification_status,
+            'rejection_reason': self.rejection_reason,
+            'uploaded_at': self.uploaded_at.isoformat(),
+            'reviewed_at': self.reviewed_at.isoformat() if self.reviewed_at else None,
+            'reviewed_by': self.reviewed_by
+        }
 
-@onboarding_bp.route('/next-step', methods=['POST'])
-@jwt_required()
-def proceed_to_next_step():
-    """Proceed to the next onboarding step"""
-    try:
-        user_id = get_jwt_identity()
-        user = User.query.get(user_id)
-        
-        if not user:
-            return jsonify({'error': 'User not found'}), 404
-        
-        data = request.get_json()
-        step_name = data.get('step_name')
-        step_data = data.get('data', {})
-        
-        # Create or update onboarding step
-        step = OnboardingStep.query.filter_by(
-            user_id=user_id, 
-            step_name=step_name
-        ).first()
-        
-        if not step:
-            step = OnboardingStep(
-                user_id=user_id,
-                step_name=step_name,
-                step_status='in_progress',
-                started_at=datetime.utcnow(),
-                data=step_data
-            )
-            db.session.add(step)
-        else:
-            step.step_status = 'in_progress'
-            step.started_at = datetime.utcnow()
-            step.data = step_data
-        
-        # Update user's onboarding step
-        user.onboarding_step = user.onboarding_step + 1
-        
-        db.session.commit()
-        
-        return jsonify({
-            'success': True,
-            'message': f'Proceeded to {step_name}',
-            'step': step.to_dict(),
-            'user': user.to_dict()
-        })
-        
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Error proceeding to next step: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@onboarding_bp.route('/complete-step', methods=['POST'])
-@jwt_required()
-def complete_step():
-    """Mark an onboarding step as completed"""
-    try:
-        user_id = get_jwt_identity()
-        user = User.query.get(user_id)
-        
-        if not user:
-            return jsonify({'error': 'User not found'}), 404
-        
-        data = request.get_json()
-        step_name = data.get('step_name')
-        step_data = data.get('data', {})
-        
-        # Find and update the step
-        step = OnboardingStep.query.filter_by(
-            user_id=user_id, 
-            step_name=step_name
-        ).first()
-        
-        if not step:
-            return jsonify({'error': 'Step not found'}), 404
-        
-        step.step_status = 'completed'
-        step.completed_at = datetime.utcnow()
-        step.data = step_data
-        
-        # Update user status based on completed step
-        if step_name == 'signature' and step.step_status == 'completed':
-            user.finders_fee_contract_signed = True
-            user.update_onboarding_status()
-        elif step_name == 'kyc' and step.step_status == 'completed':
-            user.kyc_status = 'submitted'
-            user.update_onboarding_status()
-        
-        db.session.commit()
-        
-        return jsonify({
-            'success': True,
-            'message': f'Step {step_name} completed',
-            'step': step.to_dict(),
-            'user': user.to_dict()
-        })
-        
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Error completing step: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@onboarding_bp.route('/initiate-signature', methods=['POST'])
-@jwt_required()
-def initiate_signature():
-    """Initiate document signature process (placeholder for SignNow integration)"""
-    try:
-        user_id = get_jwt_identity()
-        user = User.query.get(user_id)
-        
-        if not user:
-            return jsonify({'error': 'User not found'}), 404
-        
-        data = request.get_json()
-        document_type = data.get('document_type', 'finders_fee_contract')
-        
-        # Create document signature record
-        signature = DocumentSignature(
-            user_id=user_id,
-            document_type=document_type,
-            signnow_template_id=os.getenv('SIGNNOW_TEMPLATE_ID'),
-            signature_status='pending'
-        )
-        
-        db.session.add(signature)
-        db.session.commit()
-        
-        # TODO: Integrate with SignNow API in Phase 2
-        # For now, return placeholder response
-        
-        return jsonify({
-            'success': True,
-            'message': 'Signature process initiated',
-            'signature_id': signature.id,
-            'document_type': document_type,
-            'status': 'pending',
-            'next_step': 'signature_pending'
-        })
-        
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Error initiating signature: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@onboarding_bp.route('/upload-kyc', methods=['POST'])
-@jwt_required()
-def upload_kyc_document():
-    """Upload KYC document (placeholder for file upload)"""
-    try:
-        user_id = get_jwt_identity()
-        user = User.query.get(user_id)
-        
-        if not user:
-            return jsonify({'error': 'User not found'}), 404
-        
-        # TODO: Implement file upload in Phase 3
-        # For now, return placeholder response
-        
-        data = request.get_json()
-        document_type = data.get('document_type')
-        file_name = data.get('file_name')
-        
-        if not document_type or not file_name:
-            return jsonify({'error': 'Document type and file name required'}), 400
-        
-        # Create KYC document record
-        kyc_doc = KYCDocument(
-            user_id=user_id,
-            document_type=document_type,
-            file_path=f'/uploads/{user_id}/{file_name}',
-            file_name=file_name,
-            file_size=0,  # Will be set when actual file upload is implemented
-            mime_type='application/pdf',  # Placeholder
-            verification_status='pending'
-        )
-        
-        db.session.add(kyc_doc)
-        db.session.commit()
-        
-        return jsonify({
-            'success': True,
-            'message': 'KYC document uploaded successfully',
-            'document': kyc_doc.to_dict()
-        })
-        
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Error uploading KYC document: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@onboarding_bp.route('/kyc-status', methods=['GET'])
-@jwt_required()
-def get_kyc_status():
-    """Get KYC verification status"""
-    try:
-        user_id = get_jwt_identity()
-        user = User.query.get(user_id)
-        
-        if not user:
-            return jsonify({'error': 'User not found'}), 404
-        
-        kyc_docs = KYCDocument.query.filter_by(user_id=user_id).all()
-        
-        return jsonify({
-            'success': True,
-            'kyc_status': user.kyc_status,
-            'rejection_reason': user.kyc_rejection_reason,
-            'documents': [doc.to_dict() for doc in kyc_docs]
-        })
-        
-    except Exception as e:
-        current_app.logger.error(f"Error getting KYC status: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
+class OnboardingStep(db.Model):
+    __tablename__ = 'onboarding_steps'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    step_name = db.Column(db.String(50), nullable=False)  # 'welcome', 'signature', 'kyc', 'review', 'completed'
+    step_status = db.Column(db.Enum('pending', 'in_progress', 'completed', 'skipped', name='step_status'), default='pending')
+    started_at = db.Column(db.DateTime)
+    completed_at = db.Column(db.DateTime)
+    data = db.Column(db.JSON)  # Store step-specific data
+    
+    # Relationship
+    user = db.relationship('User', backref='onboarding_steps')
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'step_name': self.step_name,
+            'step_status': self.step_status,
+            'started_at': self.started_at.isoformat() if self.started_at else None,
+            'completed_at': self.completed_at.isoformat() if self.completed_at else None,
+            'data': self.data
+        }
 
