@@ -1,60 +1,43 @@
-import os
-import sys
-# DON'T CHANGE THIS !!!
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-from flask import Flask, send_from_directory
+from flask import Flask
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
-from datetime import timedelta
+from src.database import db
+from src.config import Config
+import os
 
-# Import configuration
-from src.config import config
-
-# Import all models
-from src.models.user import db
-from src.models.lead import Lead
-from src.models.commission import Commission
-from src.models.commission_settings import CommissionSettings
-from src.models.agreement import Agreement
-from src.models.support import SupportTicket, SupportMessage
-
-# Import all routes
-from src.routes.user import user_bp
-from src.routes.auth import auth_bp
-from src.routes.leads import leads_bp
-from src.routes.commissions import commissions_bp
-from src.routes.support import support_bp
-from src.routes.admin import admin_bp
-from src.routes.ai import ai_bp
-
-def create_app(config_name=None):
-    """Application factory pattern"""
-    if config_name is None:
-        config_name = os.environ.get('FLASK_ENV', 'development')
+def create_app():
+    app = Flask(__name__)
     
-    app = Flask(__name__, static_folder=os.path.join(os.path.dirname(__file__), 'static'))
+    # Configuration
+    app.config.from_object(Config)
     
-    # Load configuration
-    app.config.from_object(config[config_name])
-    
-    # Enable CORS for all routes
-    CORS(app, origins=app.config['CORS_ORIGINS'])
-    
-    # Initialize JWT
+    # Initialize extensions
+    db.init_app(app)
     jwt = JWTManager(app)
     
-    # Security headers
-    @app.after_request
-    def add_security_headers(response):
-        response.headers['X-Content-Type-Options'] = 'nosniff'
-        response.headers['X-Frame-Options'] = 'DENY'
-        response.headers['X-XSS-Protection'] = '1; mode=block'
-        response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
-        response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' https:; connect-src 'self' https:"
-        return response
+    # CORS configuration
+    cors_origins = os.getenv('CORS_ORIGINS', 'http://localhost:3000').split(',')
+    CORS(app, origins=cors_origins, supports_credentials=True)
+    
+    # Import models to register them with SQLAlchemy
+    from src.models.user import User
+    from src.models.lead import Lead
+    from src.models.commission import Commission
+    from src.models.commission_settings import CommissionSettings
+    from src.models.agreement import Agreement
+    from src.models.support import SupportTicket, SupportMessage
+    from src.models.onboarding import DocumentSignature, KYCDocument, OnboardingStep
     
     # Register blueprints
+    from src.routes.auth import auth_bp
+    from src.routes.user import user_bp
+    from src.routes.leads import leads_bp
+    from src.routes.commissions import commissions_bp
+    from src.routes.support import support_bp
+    from src.routes.admin import admin_bp
+    from src.routes.ai import ai_bp
+    from src.routes.onboarding import onboarding_bp
+    
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
     app.register_blueprint(user_bp, url_prefix='/api/users')
     app.register_blueprint(leads_bp, url_prefix='/api/leads')
@@ -62,60 +45,22 @@ def create_app(config_name=None):
     app.register_blueprint(support_bp, url_prefix='/api/support')
     app.register_blueprint(admin_bp, url_prefix='/api/admin')
     app.register_blueprint(ai_bp, url_prefix='/api/ai')
+    app.register_blueprint(onboarding_bp, url_prefix='/api/onboarding')
     
-    # Database configuration
-    db.init_app(app)
-    
-    # Create tables and default data
+    # Create tables
     with app.app_context():
         db.create_all()
-        
-        # Create default commission settings if none exist
-        if not CommissionSettings.query.first():
-            default_settings = CommissionSettings()
-            db.session.add(default_settings)
-            db.session.commit()
+        print("Database tables created successfully!")
     
     # Health check endpoint
-    @app.route('/api/health')
+    @app.route('/health')
     def health_check():
-        return {'status': 'healthy', 'version': '1.0.0'}, 200
-    
-    @app.route('/', defaults={'path': ''})
-    @app.route('/<path:path>')
-    def serve(path):
-        static_folder_path = app.static_folder
-        if static_folder_path is None:
-                return "Static folder not configured", 404
-
-        if path != "" and os.path.exists(os.path.join(static_folder_path, path)):
-            return send_from_directory(static_folder_path, path)
-        else:
-            index_path = os.path.join(static_folder_path, 'index.html')
-            if os.path.exists(index_path):
-                return send_from_directory(static_folder_path, 'index.html')
-            else:
-                return "index.html not found", 404
-
-    # JWT error handlers
-    @jwt.expired_token_loader
-    def expired_token_callback(jwt_header, jwt_payload):
-        return {'success': False, 'error': {'code': 'TOKEN_EXPIRED', 'message': 'Token has expired'}}, 401
-
-    @jwt.invalid_token_loader
-    def invalid_token_callback(error):
-        return {'success': False, 'error': {'code': 'INVALID_TOKEN', 'message': 'Invalid token'}}, 401
-
-    @jwt.unauthorized_loader
-    def missing_token_callback(error):
-        return {'success': False, 'error': {'code': 'TOKEN_REQUIRED', 'message': 'Authorization token is required'}}, 401
+        return {'status': 'healthy', 'message': 'Agnus Link API is running'}
     
     return app
 
-# Create app instance
-app = create_app()
-
 if __name__ == '__main__':
+    app = create_app()
     port = int(os.environ.get('PORT', 5000))
-    debug = os.environ.get('FLASK_ENV', 'development') == 'development'
-    app.run(host='0.0.0.0', port=port, debug=debug)
+    app.run(host='0.0.0.0', port=port, debug=False)
+
