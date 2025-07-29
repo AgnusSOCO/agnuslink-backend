@@ -1,37 +1,36 @@
 from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
 import secrets
 import string
 
-db = SQLAlchemy()
+# Import db from database module
+from src.database import db
 
 class User(db.Model):
     __tablename__ = 'users'
     
+    # Primary key
     id = db.Column(db.Integer, primary_key=True)
-    email = db.Column(db.String(120), unique=True, nullable=False)
-    password_hash = db.Column(db.String(255), nullable=False)
-    role = db.Column(db.String(20), default='affiliate')  # 'affiliate', 'admin', 'client'
     
-    # Profile Information
+    # Basic authentication
+    email = db.Column(db.String(120), unique=True, nullable=False, index=True)
+    password_hash = db.Column(db.String(255), nullable=False)
+    
+    # Profile information
     first_name = db.Column(db.String(100))
     last_name = db.Column(db.String(100))
     phone = db.Column(db.String(20))
     
-    # Payment Information
-    paypal_email = db.Column(db.String(120))
-    bank_account_number = db.Column(db.String(50))
-    bank_routing_number = db.Column(db.String(20))
-    bank_account_holder_name = db.Column(db.String(100))
-    
-    # Verification
+    # Account settings
+    role = db.Column(db.String(20), default='affiliate')  # 'affiliate', 'admin', 'client'
+    is_active = db.Column(db.Boolean, default=True)
     is_verified = db.Column(db.Boolean, default=False)
-    government_id_url = db.Column(db.String(255))
     
     # Onboarding fields
-    onboarding_status = db.Column(db.String(50), default='pending')  # 'pending', 'documents_signed', 'kyc_submitted', 'kyc_approved', 'completed', 'rejected'
+    onboarding_status = db.Column(db.String(50), default='pending')
     onboarding_step = db.Column(db.Integer, default=1)
-    kyc_status = db.Column(db.String(50), default='pending')  # 'pending', 'submitted', 'approved', 'rejected', 'requires_resubmission'
+    kyc_status = db.Column(db.String(50), default='pending')
     kyc_rejection_reason = db.Column(db.Text)
     
     # Agreement tracking
@@ -39,19 +38,27 @@ class User(db.Model):
     affiliate_agreement_signed = db.Column(db.Boolean, default=False)
     finders_fee_contract_signed = db.Column(db.Boolean, default=False)
     
-    # Referral Information
-    referral_code = db.Column(db.String(20), unique=True)
+    # Payment information
+    paypal_email = db.Column(db.String(120))
+    bank_account_number = db.Column(db.String(50))
+    bank_routing_number = db.Column(db.String(20))
+    bank_account_holder_name = db.Column(db.String(100))
+    
+    # Referral system
+    referral_code = db.Column(db.String(20), unique=True, index=True)
     referred_by_id = db.Column(db.Integer, db.ForeignKey('users.id'))
+    commission_rate = db.Column(db.Float, default=0.10)
+    
+    # File uploads
+    government_id_url = db.Column(db.String(255))
     
     # Timestamps
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_login = db.Column(db.DateTime)
     
     # Relationships
     referred_by = db.relationship('User', remote_side=[id], backref='referrals')
-    leads_submitted = db.relationship('Lead', foreign_keys='Lead.submitted_by_id', backref='submitted_by')
-    commissions = db.relationship('Commission', backref='affiliate')
     
     def __init__(self, **kwargs):
         super(User, self).__init__(**kwargs)
@@ -64,6 +71,14 @@ class User(db.Model):
             code = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
             if not User.query.filter_by(referral_code=code).first():
                 return code
+    
+    def set_password(self, password):
+        """Set password hash"""
+        self.password_hash = generate_password_hash(password)
+    
+    def check_password(self, password):
+        """Check password"""
+        return check_password_hash(self.password_hash, password)
     
     @property
     def missing_agreements(self):
@@ -85,7 +100,7 @@ class User(db.Model):
     @property
     def can_access_dashboard(self):
         """Check if user can access full dashboard"""
-        return self.onboarding_complete and self.is_verified
+        return self.onboarding_complete and self.is_active
     
     def update_onboarding_status(self):
         """Update onboarding status based on current state"""
@@ -99,19 +114,23 @@ class User(db.Model):
         elif self.kyc_status == 'rejected':
             self.onboarding_status = 'rejected'
     
-    def __repr__(self):
-        return f'<User {self.email}>'
+    def get_full_name(self):
+        """Get user's full name"""
+        if self.first_name and self.last_name:
+            return f"{self.first_name} {self.last_name}"
+        return self.email
     
     def to_dict(self, include_sensitive=False):
+        """Convert to dictionary"""
         data = {
             'id': self.id,
             'email': self.email,
-            'role': self.role,
             'first_name': self.first_name,
             'last_name': self.last_name,
             'phone': self.phone,
+            'role': self.role,
+            'is_active': self.is_active,
             'is_verified': self.is_verified,
-            'referral_code': self.referral_code,
             'onboarding_status': self.onboarding_status,
             'onboarding_step': self.onboarding_step,
             'kyc_status': self.kyc_status,
@@ -122,7 +141,11 @@ class User(db.Model):
             'missing_agreements': self.missing_agreements,
             'onboarding_complete': self.onboarding_complete,
             'can_access_dashboard': self.can_access_dashboard,
+            'referral_code': self.referral_code,
+            'referred_by_id': self.referred_by_id,
+            'commission_rate': self.commission_rate,
             'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
             'last_login': self.last_login.isoformat() if self.last_login else None
         }
         
@@ -137,31 +160,6 @@ class User(db.Model):
         
         return data
     
-    def get_full_name(self):
-        """Get user's full name"""
-        if self.first_name and self.last_name:
-            return f"{self.first_name} {self.last_name}"
-        return self.email
-    
-    def get_referral_count(self):
-        """Get count of direct referrals"""
-        return len(self.referrals)
-    
-    def get_total_commission(self):
-        """Get total commission earned"""
-        from src.models.commission import Commission
-        total = db.session.query(db.func.sum(Commission.amount)).filter_by(
-            affiliate_id=self.id,
-            status='paid'
-        ).scalar()
-        return float(total) if total else 0.0
-    
-    def get_pending_commission(self):
-        """Get pending commission amount"""
-        from src.models.commission import Commission
-        total = db.session.query(db.func.sum(Commission.amount)).filter_by(
-            affiliate_id=self.id,
-            status='pending'
-        ).scalar()
-        return float(total) if total else 0.0
+    def __repr__(self):
+        return f'<User {self.email}>'
 
