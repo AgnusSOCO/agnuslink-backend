@@ -27,13 +27,20 @@ def register():
         if existing_user:
             return jsonify({'error': 'Email already registered'}), 400
         
-        # Create new user
+        # Create new user with onboarding defaults
         user = User(
             email=data['email'],
             first_name=data['first_name'],
             last_name=data['last_name'],
             phone=data.get('phone'),
-            role=data.get('role', 'affiliate')
+            role=data.get('role', 'affiliate'),
+            # Onboarding defaults
+            onboarding_status='pending',
+            onboarding_step=1,
+            kyc_status='pending',
+            agreements_complete=False,
+            affiliate_agreement_signed=False,
+            finders_fee_contract_signed=False
         )
         
         # Set password
@@ -58,13 +65,20 @@ def register():
             expires_delta=timedelta(days=7)
         )
         
+        # New users always need onboarding
         return jsonify({
             'success': True,
             'message': 'Registration successful',
             'token': access_token,
             'user': user.to_dict(),
-            'requires_onboarding': not user.onboarding_complete,
-            'redirect_to': 'onboarding' if not user.onboarding_complete else 'dashboard'
+            'requires_onboarding': True,
+            'redirect_to': 'onboarding',
+            'onboarding_step': user.onboarding_step,
+            'next_action': {
+                'step': 'welcome',
+                'action': 'start_onboarding',
+                'message': 'Welcome! Please complete the onboarding process to access your dashboard.'
+            }
         }), 201
         
     except Exception as e:
@@ -105,9 +119,21 @@ def login():
             expires_delta=timedelta(days=7)
         )
         
-        # Check onboarding status
+        # Determine redirect based on onboarding status
         requires_onboarding = not user.onboarding_complete
-        redirect_to = 'onboarding' if requires_onboarding else 'dashboard'
+        
+        if requires_onboarding:
+            # User needs to complete onboarding
+            redirect_to = 'onboarding'
+            next_action = _get_next_onboarding_action(user)
+        else:
+            # User can access dashboard
+            redirect_to = 'dashboard'
+            next_action = {
+                'step': 'completed',
+                'action': 'access_dashboard',
+                'message': 'Welcome back! Access your dashboard.'
+            }
         
         return jsonify({
             'success': True,
@@ -115,7 +141,9 @@ def login():
             'token': access_token,
             'user': user.to_dict(),
             'requires_onboarding': requires_onboarding,
-            'redirect_to': redirect_to
+            'redirect_to': redirect_to,
+            'onboarding_step': user.onboarding_step,
+            'next_action': next_action
         })
         
     except Exception as e:
@@ -133,10 +161,16 @@ def get_current_user():
         if not user:
             return jsonify({'error': 'User not found'}), 404
         
+        # Determine next action
+        requires_onboarding = not user.onboarding_complete
+        next_action = _get_next_onboarding_action(user) if requires_onboarding else None
+        
         return jsonify({
             'success': True,
             'user': user.to_dict(),
-            'requires_onboarding': not user.onboarding_complete
+            'requires_onboarding': requires_onboarding,
+            'onboarding_step': user.onboarding_step,
+            'next_action': next_action
         })
         
     except Exception as e:
@@ -167,4 +201,48 @@ def test_auth():
         'message': 'Auth blueprint is working',
         'timestamp': datetime.utcnow().isoformat()
     })
+
+def _get_next_onboarding_action(user):
+    """Get the next onboarding action for a user"""
+    if user.onboarding_complete:
+        return {
+            'step': 'completed',
+            'action': 'access_dashboard',
+            'message': 'Onboarding complete! You can now access the full dashboard.'
+        }
+    
+    if user.kyc_status == 'rejected':
+        return {
+            'step': 'kyc_resubmit',
+            'action': 'upload_kyc',
+            'message': 'Your KYC documents were rejected. Please resubmit with valid documents.',
+            'rejection_reason': user.kyc_rejection_reason
+        }
+    
+    if user.kyc_status == 'submitted':
+        return {
+            'step': 'pending_review',
+            'action': 'wait',
+            'message': 'Your documents are under review. You will be notified once approved.'
+        }
+    
+    if not user.finders_fee_contract_signed:
+        return {
+            'step': 'document_signing',
+            'action': 'sign_contract',
+            'message': 'Please sign the Finder\'s Fee Contract to continue.'
+        }
+    
+    if user.finders_fee_contract_signed and user.kyc_status == 'pending':
+        return {
+            'step': 'kyc_upload',
+            'action': 'upload_kyc',
+            'message': 'Please upload your government-issued ID for verification.'
+        }
+    
+    return {
+        'step': 'welcome',
+        'action': 'start_onboarding',
+        'message': 'Welcome! Let\'s complete your onboarding process.'
+    }
 
