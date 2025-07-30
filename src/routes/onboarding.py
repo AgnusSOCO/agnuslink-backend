@@ -6,10 +6,10 @@ import uuid
 from datetime import datetime
 import logging
 
-from src.database import db
-from src.models.user import User
-from src.models.onboarding import DocumentSignature, KYCDocument, OnboardingStep
-from src.services.signnow_service import signnow_service
+from database import db
+from models.user import User
+from models.onboarding import DocumentSignature, KYCDocument, OnboardingStep
+from services.signnow_service import signnow_service
 
 logger = logging.getLogger(__name__)
 
