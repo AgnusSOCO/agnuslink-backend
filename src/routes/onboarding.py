@@ -2,17 +2,17 @@ from flask import Blueprint, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 import datetime
 
-# Create onboarding blueprint with proper JWT string handling
+# Create onboarding blueprint with correct import paths for Railway
 onboarding_bp = Blueprint('onboarding', __name__)
 
 @onboarding_bp.route('/status', methods=['GET'])
 @jwt_required()
 def get_onboarding_status():
-    """Get user's onboarding status and next steps with proper JWT string handling"""
+    """Get user's onboarding status and next steps with correct imports"""
     try:
-        # Lazy imports to avoid circular import issues
-        from database import db
-        from models.user import User
+        # Lazy imports with correct paths for Railway deployment
+        from src.database import db
+        from src.models.user import User
         
         # Get user identity (now should be a string after auth.py fix)
         user_identity = get_jwt_identity()
@@ -43,6 +43,7 @@ def get_onboarding_status():
         agreement_signed = getattr(user, 'agreement_signed', False)
         kyc_verified = getattr(user, 'kyc_verified', False)
         onboarding_complete = getattr(user, 'onboarding_complete', False)
+        finders_fee_contract_signed = getattr(user, 'finders_fee_contract_signed', False)
         
         if onboarding_complete:
             current_step = 'complete'
@@ -50,7 +51,7 @@ def get_onboarding_status():
         elif kyc_verified:
             current_step = 'complete'
             progress = 100
-        elif agreement_signed:
+        elif finders_fee_contract_signed:
             current_step = 'kyc_upload'
             progress = 60
         else:
@@ -67,6 +68,7 @@ def get_onboarding_status():
             'onboarding_complete': onboarding_complete,
             'kyc_verified': kyc_verified,
             'agreement_signed': agreement_signed,
+            'finders_fee_contract_signed': finders_fee_contract_signed,
             'timestamp': datetime.datetime.utcnow().isoformat(),
             'jwt_identity_received': user_identity,
             'jwt_identity_type': str(type(user_identity)),
@@ -76,7 +78,8 @@ def get_onboarding_status():
     except ImportError as e:
         return jsonify({
             'error': f'Import error: {str(e)}',
-            'success': False
+            'success': False,
+            'import_attempted': ['src.database', 'src.models.user']
         }), 500
     except Exception as e:
         return jsonify({
@@ -89,7 +92,7 @@ def get_onboarding_status():
 def test_onboarding():
     """Test endpoint to verify onboarding routes are working"""
     return jsonify({
-        'message': 'Onboarding routes with JWT string fixes are working!',
+        'message': 'Onboarding routes with correct imports are working!',
         'timestamp': datetime.datetime.utcnow().isoformat(),
         'routes_available': [
             '/status (requires JWT)',
@@ -98,10 +101,10 @@ def test_onboarding():
             '/user-info (requires JWT)'
         ],
         'blueprint_name': 'onboarding',
-        'import_status': 'database_and_user_model_imported_with_jwt_string_fixes',
+        'import_status': 'src_prefixed_imports',
         'features': [
             'JWT authentication with string identity handling',
-            'User model access',
+            'User model access with src. imports',
             'Enhanced error handling',
             'Debug information',
             'Proper type conversion'
@@ -112,8 +115,8 @@ def test_onboarding():
 def onboarding_health():
     """Health check for onboarding blueprint"""
     try:
-        from database import db
-        from models.user import User
+        from src.database import db
+        from src.models.user import User
         
         # Test database and model access
         user_count = User.query.count()
@@ -124,23 +127,25 @@ def onboarding_health():
             'timestamp': datetime.datetime.utcnow().isoformat(),
             'database_connected': True,
             'user_model_accessible': True,
-            'total_users': user_count
+            'total_users': user_count,
+            'import_method': 'src_prefixed'
         })
     except Exception as e:
         return jsonify({
             'status': 'error',
             'blueprint': 'onboarding',
             'timestamp': datetime.datetime.utcnow().isoformat(),
-            'error': str(e)
+            'error': str(e),
+            'import_method': 'src_prefixed'
         }), 500
 
 @onboarding_bp.route('/user-info', methods=['GET'])
 @jwt_required()
 def get_user_info():
-    """Get current user information with JWT string handling"""
+    """Get current user information with correct imports"""
     try:
-        from database import db
-        from models.user import User
+        from src.database import db
+        from src.models.user import User
         
         # Get user identity and convert to integer
         user_identity = get_jwt_identity()
@@ -161,7 +166,8 @@ def get_user_info():
                 'created_at': user.created_at.isoformat() if hasattr(user, 'created_at') else None,
                 'onboarding_complete': getattr(user, 'onboarding_complete', False),
                 'kyc_verified': getattr(user, 'kyc_verified', False),
-                'agreement_signed': getattr(user, 'agreement_signed', False)
+                'agreement_signed': getattr(user, 'agreement_signed', False),
+                'finders_fee_contract_signed': getattr(user, 'finders_fee_contract_signed', False)
             },
             'jwt_debug': {
                 'received_identity': user_identity,
@@ -173,6 +179,39 @@ def get_user_info():
     except Exception as e:
         return jsonify({
             'error': f'Error getting user info: {str(e)}',
+            'success': False
+        }), 500
+
+@onboarding_bp.route('/start-signature', methods=['POST'])
+@jwt_required()
+def start_signature():
+    """Start the document signature process"""
+    try:
+        from src.database import db
+        from src.models.user import User
+        
+        # Get user identity and convert to integer
+        user_identity = get_jwt_identity()
+        user_id = int(user_identity)
+        
+        user = User.query.get(user_id)
+        
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        # For now, return a placeholder response
+        # This is where SignNow integration would go
+        return jsonify({
+            'success': True,
+            'message': 'Document signature process initiated',
+            'user_id': user_id,
+            'next_step': 'sign_document',
+            'timestamp': datetime.datetime.utcnow().isoformat()
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'error': f'Error starting signature: {str(e)}',
             'success': False
         }), 500
 
