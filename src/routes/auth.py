@@ -59,9 +59,9 @@ def register():
         
         logger.info(f"User registered successfully: {user.email}")
         
-        # Create access token
+        # Create access token - FIXED: Convert user.id to string
         access_token = create_access_token(
-            identity=user.id,
+            identity=str(user.id),  # Convert to string to fix "Subject must be a string" error
             expires_delta=timedelta(days=7)
         )
         
@@ -113,9 +113,9 @@ def login():
         
         logger.info(f"User logged in successfully: {user.email}")
         
-        # Create access token
+        # Create access token - FIXED: Convert user.id to string
         access_token = create_access_token(
-            identity=user.id,
+            identity=str(user.id),  # Convert to string to fix "Subject must be a string" error
             expires_delta=timedelta(days=7)
         )
         
@@ -155,7 +155,9 @@ def login():
 def get_current_user():
     """Get current user information"""
     try:
-        user_id = get_jwt_identity()
+        # FIXED: get_jwt_identity() now returns string, convert to int for database query
+        user_identity = get_jwt_identity()
+        user_id = int(user_identity)  # Convert string back to int for database query
         user = User.query.get(user_id)
         
         if not user:
@@ -182,8 +184,9 @@ def get_current_user():
 def logout():
     """Logout user (client-side token removal)"""
     try:
-        user_id = get_jwt_identity()
-        logger.info(f"User logged out: {user_id}")
+        # FIXED: get_jwt_identity() now returns string
+        user_identity = get_jwt_identity()
+        logger.info(f"User logged out: {user_identity}")
         
         return jsonify({
             'success': True,
