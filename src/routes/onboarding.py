@@ -1,12 +1,14 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
+from flask_cors import cross_origin
 import logging
 
 # Create blueprint
 onboarding_bp = Blueprint('onboarding', __name__)
 logger = logging.getLogger(__name__)
 
-@onboarding_bp.route('/status', methods=['GET'])
+@onboarding_bp.route('/status', methods=['GET', 'OPTIONS'])
+@cross_origin(origins='*', headers=['Content-Type', 'Authorization'])
 @jwt_required()
 def get_onboarding_status():
     """Get current user's onboarding status"""
@@ -70,7 +72,8 @@ def get_onboarding_status():
         logger.error(f"Error getting onboarding status: {str(e)}")
         return jsonify({'error': f'Failed to get onboarding status: {str(e)}'}), 500
 
-@onboarding_bp.route('/update-personal-info', methods=['POST'])
+@onboarding_bp.route('/update-personal-info', methods=['POST', 'OPTIONS'])
+@cross_origin(origins='*', headers=['Content-Type', 'Authorization'])
 @jwt_required()
 def update_personal_info():
     """Update user's personal information"""
@@ -115,7 +118,8 @@ def update_personal_info():
         logger.error(f"Error updating personal info: {str(e)}")
         return jsonify({'error': f'Failed to update personal info: {str(e)}'}), 500
 
-@onboarding_bp.route('/upload-kyc', methods=['POST'])
+@onboarding_bp.route('/upload-kyc', methods=['POST', 'OPTIONS'])
+@cross_origin(origins='*', headers=['Content-Type', 'Authorization'])
 @jwt_required()
 def upload_kyc_document():
     """Handle KYC document upload"""
@@ -154,7 +158,8 @@ def upload_kyc_document():
         logger.error(f"Error uploading KYC: {str(e)}")
         return jsonify({'error': f'Failed to upload KYC: {str(e)}'}), 500
 
-@onboarding_bp.route('/complete-onboarding', methods=['POST'])
+@onboarding_bp.route('/complete-onboarding', methods=['POST', 'OPTIONS'])
+@cross_origin(origins='*', headers=['Content-Type', 'Authorization'])
 @jwt_required()
 def complete_onboarding():
     """Mark onboarding as complete and notify team"""
@@ -198,7 +203,8 @@ def complete_onboarding():
         logger.error(f"Error completing onboarding: {str(e)}")
         return jsonify({'error': f'Failed to complete onboarding: {str(e)}'}), 500
 
-@onboarding_bp.route('/user-info', methods=['GET'])
+@onboarding_bp.route('/user-info', methods=['GET', 'OPTIONS'])
+@cross_origin(origins='*', headers=['Content-Type', 'Authorization'])
 @jwt_required()
 def get_user_info():
     """Get current user information"""
@@ -236,12 +242,13 @@ def get_user_info():
         logger.error(f"Error getting user info: {str(e)}")
         return jsonify({'error': f'Failed to get user info: {str(e)}'}), 500
 
-@onboarding_bp.route('/test', methods=['GET'])
+@onboarding_bp.route('/test', methods=['GET', 'OPTIONS'])
+@cross_origin(origins='*')
 def test_onboarding():
     """Test endpoint to verify onboarding routes are working"""
     return jsonify({
         'message': 'Onboarding routes are working!',
-        'version': 'manual_process_v1.0',
+        'version': 'manual_process_v1.0_cors_fixed',
         'endpoints': [
             '/api/onboarding/status',
             '/api/onboarding/update-personal-info',
@@ -249,6 +256,34 @@ def test_onboarding():
             '/api/onboarding/complete-onboarding',
             '/api/onboarding/user-info',
             '/api/onboarding/test'
-        ]
+        ],
+        'cors_enabled': True
     }), 200
+
+# Handle preflight OPTIONS requests for all routes
+@onboarding_bp.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        response = jsonify({'message': 'OK'})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        response.headers.add('Access-Control-Allow-Headers', "*")
+        response.headers.add('Access-Control-Allow-Methods', "*")
+        return response
+
+# Error handler for JWT errors
+@onboarding_bp.errorhandler(422)
+def handle_jwt_error(error):
+    """Handle JWT validation errors"""
+    return jsonify({
+        'error': 'Invalid or missing authentication token',
+        'message': 'Please log in again'
+    }), 401
+
+@onboarding_bp.errorhandler(401)
+def handle_unauthorized(error):
+    """Handle unauthorized access"""
+    return jsonify({
+        'error': 'Unauthorized access',
+        'message': 'Please log in to access this resource'
+    }), 401
 
