@@ -425,6 +425,62 @@ class SignNowService:
                 'success': False,
                 'error': f"Connection test failed: {str(e)}"
             }
+    
+    def create_complete_signing_flow(self, user_data: Dict) -> Dict:
+        """
+        Complete signing flow: create document, invite, and get signing link
+        This is the main method called by the onboarding routes
+        """
+        if not self.is_available():
+            return {
+                'success': False,
+                'error': 'SignNow not available',
+                'message': 'Please configure SIGNNOW_API_KEY environment variable'
+            }
+        
+        try:
+            logger.info(f"Starting complete signing flow for user: {user_data.get('email')}")
+            
+            # Step 1: Create document from template
+            doc_result = self.create_document_from_template(user_data)
+            if not doc_result['success']:
+                return doc_result
+            
+            document_id = doc_result['document_id']
+            logger.info(f"Document created: {document_id}")
+            
+            # Step 2: Create embedded signing invite
+            invite_result = self.create_embedded_signing_invite(document_id, user_data)
+            if not invite_result['success']:
+                return invite_result
+            
+            invite_id = invite_result['invite_id']
+            logger.info(f"Invite created: {invite_id}")
+            
+            # Step 3: Get embedded signing link
+            link_result = self.get_embedded_signing_link(document_id, user_data.get('email'))
+            if not link_result['success']:
+                return link_result
+            
+            signing_link = link_result['signing_url']
+            logger.info(f"Signing link generated for document: {document_id}")
+            
+            return {
+                'success': True,
+                'document_id': document_id,
+                'invite_id': invite_id,
+                'signing_link': signing_link,
+                'document_name': doc_result.get('document_name'),
+                'expires_at': link_result.get('expires_at'),
+                'message': 'Document ready for signing'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in complete signing flow: {str(e)}")
+            return {
+                'success': False,
+                'error': f"Failed to create signing flow: {str(e)}"
+            }
 
 # Global instance
 signnow_service = SignNowService()
