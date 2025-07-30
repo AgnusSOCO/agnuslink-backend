@@ -1,14 +1,10 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from flask_sqlalchemy import SQLAlchemy
-from flask_jwt_extended import JWTManager
-from sqlalchemy import text
 import os
 import logging
-
-# Import database instance
-from src.database import db
-from src.config import Config
+from flask import Flask, jsonify
+from flask_cors import CORS
+from flask_jwt_extended import JWTManager
+from sqlalchemy import text
+from datetime import timedelta
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -16,107 +12,141 @@ logger = logging.getLogger(__name__)
 
 def create_app():
     app = Flask(__name__)
-    app.config.from_object(Config)
+    
+    # Configuration
+    app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key')
+    app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'jwt-secret-key')
+    app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
+    
+    # Database configuration
+    database_url = os.environ.get('DATABASE_URL')
+    if database_url:
+        # Fix postgres:// to postgresql:// for SQLAlchemy 2.x
+        if database_url.startswith('postgres://'):
+            database_url = database_url.replace('postgres://', 'postgresql://', 1)
+        app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+    else:
+        app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///agnus_link.db'
+    
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    
+    # CORS configuration - FIXED for Vercel
+    cors_origins = os.environ.get('CORS_ORIGINS', 'https://agnusfrontend.vercel.app').split(',')
+    CORS(app, 
+         origins=cors_origins,
+         methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+         allow_headers=['Content-Type', 'Authorization', 'Accept'],
+         supports_credentials=True)
     
     # Initialize extensions
+    from src.database import db
     db.init_app(app)
+    
     jwt = JWTManager(app)
     
-    # Configure CORS with specific settings for Vercel
-    CORS(app, 
-         origins=[
-             "https://agnusfrontend.vercel.app",
-             "https://*.vercel.app",
-             "http://localhost:3000",
-             "http://localhost:5173"
-         ],
-         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-         allow_headers=["Content-Type", "Authorization", "Accept"],
-         supports_credentials=True,
-         expose_headers=["Content-Type", "Authorization"]
-    )
+    # Import models to ensure they're registered
+    try:
+        from src.models.user import User
+        logger.info("Imported User model")
+    except ImportError as e:
+        logger.error(f"Failed to import User model: {e}")
     
-    # Handle preflight requests
-    @app.before_request
-    def handle_preflight():
-        if request.method == "OPTIONS":
-            response = jsonify({'status': 'ok'})
-            response.headers.add("Access-Control-Allow-Origin", request.headers.get('Origin', '*'))
-            response.headers.add('Access-Control-Allow-Headers', "Content-Type,Authorization,Accept")
-            response.headers.add('Access-Control-Allow-Methods', "GET,PUT,POST,DELETE,OPTIONS")
-            response.headers.add('Access-Control-Allow-Credentials', 'true')
-            return response
-
-    # Import and register blueprints
+    try:
+        from src.models.onboarding import DocumentSignature, KYCDocument, OnboardingStep
+        logger.info("Imported onboarding models")
+    except ImportError as e:
+        logger.error(f"Failed to import onboarding models: {e}")
+    
+    try:
+        from src.models.lead import Lead
+        logger.info("Imported Lead model")
+    except ImportError as e:
+        logger.error(f"Failed to import Lead model: {e}")
+    
+    try:
+        from src.models.commission import Commission
+        logger.info("Imported Commission model")
+    except ImportError as e:
+        logger.error(f"Failed to import Commission model: {e}")
+    
+    try:
+        from src.models.commission_settings import CommissionSettings
+        logger.info("Imported CommissionSettings model")
+    except ImportError as e:
+        logger.error(f"Failed to import CommissionSettings model: {e}")
+    
+    try:
+        from src.models.agreement import Agreement
+        logger.info("Imported Agreement model")
+    except ImportError as e:
+        logger.error(f"Failed to import Agreement model: {e}")
+    
+    try:
+        from src.models.support import SupportTicket, SupportMessage
+        logger.info("Imported Support models")
+    except ImportError as e:
+        logger.error(f"Failed to import Support models: {e}")
+    
+    # Register blueprints
     try:
         from src.routes.auth import auth_bp
         app.register_blueprint(auth_bp, url_prefix='/api/auth')
         logger.info("Registered auth blueprint")
     except ImportError as e:
         logger.error(f"Failed to import auth blueprint: {e}")
-
+    
     try:
         from src.routes.user import user_bp
         app.register_blueprint(user_bp, url_prefix='/api/user')
         logger.info("Registered user blueprint")
     except ImportError as e:
         logger.error(f"Failed to import user blueprint: {e}")
-
+    
+    # CRITICAL: Register onboarding blueprint
     try:
         from src.routes.onboarding import onboarding_bp
         app.register_blueprint(onboarding_bp, url_prefix='/api/onboarding')
         logger.info("Registered onboarding blueprint")
     except ImportError as e:
         logger.error(f"Failed to import onboarding blueprint: {e}")
-
+    except Exception as e:
+        logger.error(f"Error registering onboarding blueprint: {e}")
+    
     try:
         from src.routes.leads import leads_bp
         app.register_blueprint(leads_bp, url_prefix='/api/leads')
         logger.info("Registered leads blueprint")
     except ImportError as e:
         logger.error(f"Failed to import leads blueprint: {e}")
-
+    
     try:
         from src.routes.commissions import commissions_bp
         app.register_blueprint(commissions_bp, url_prefix='/api/commissions')
         logger.info("Registered commissions blueprint")
     except ImportError as e:
         logger.error(f"Failed to import commissions blueprint: {e}")
-
+    
     try:
         from src.routes.support import support_bp
         app.register_blueprint(support_bp, url_prefix='/api/support')
         logger.info("Registered support blueprint")
     except ImportError as e:
         logger.error(f"Failed to import support blueprint: {e}")
-
+    
     try:
         from src.routes.admin import admin_bp
         app.register_blueprint(admin_bp, url_prefix='/api/admin')
         logger.info("Registered admin blueprint")
     except ImportError as e:
         logger.error(f"Failed to import admin blueprint: {e}")
-
+    
     try:
         from src.routes.ai import ai_bp
         app.register_blueprint(ai_bp, url_prefix='/api/ai')
         logger.info("Registered ai blueprint")
     except ImportError as e:
         logger.error(f"Failed to import ai blueprint: {e}")
-
-    # Import models to ensure they're registered
-    try:
-        from src.models.user import User
-        from src.models.onboarding import DocumentSignature, KYCDocument, OnboardingStep
-        from src.models.lead import Lead
-        from src.models.commission import Commission
-        from src.models.commission_settings import CommissionSettings
-        from src.models.agreement import Agreement
-        from src.models.support import SupportTicket, SupportMessage
-        logger.info("Imported all models successfully")
-    except ImportError as e:
-        logger.error(f"Failed to import some models: {e}")
-
+    
     # Create tables
     with app.app_context():
         try:
@@ -129,12 +159,22 @@ def create_app():
             db.create_all()
             logger.info("Database tables created successfully")
             
+            # List created tables for debugging
+            with db.engine.connect() as connection:
+                result = connection.execute(text("""
+                    SELECT table_name 
+                    FROM information_schema.tables 
+                    WHERE table_schema = 'public'
+                """))
+                tables = [row[0] for row in result]
+                logger.info(f"Tables created: {tables}")
+                
         except Exception as e:
             logger.error(f"Database error: {e}")
-
+    
     # Health check endpoint
     @app.route('/health')
-    def health_check():
+    def health():
         try:
             # Test database connection
             with db.engine.connect() as connection:
@@ -144,7 +184,7 @@ def create_app():
             db_status = f"error: {str(e)}"
         
         # Get registered blueprints
-        blueprints = [bp.name for bp in app.blueprints.values()]
+        blueprints = list(app.blueprints.keys())
         
         # Get imported models
         models = []
@@ -191,43 +231,62 @@ def create_app():
             'blueprints_registered': blueprints,
             'models_imported': models
         })
-
-    # Debug endpoints
+    
+    # Debug endpoint to list tables
     @app.route('/api/debug/tables')
     def debug_tables():
         try:
             with db.engine.connect() as connection:
-                result = connection.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'"))
-                tables = [row[0] for row in result]
-            return jsonify({
-                'tables': tables,
-                'total_tables': len(tables)
-            })
+                result = connection.execute(text("""
+                    SELECT table_name, column_name, data_type 
+                    FROM information_schema.columns 
+                    WHERE table_schema = 'public'
+                    ORDER BY table_name, ordinal_position
+                """))
+                
+                tables = {}
+                for row in result:
+                    table_name, column_name, data_type = row
+                    if table_name not in tables:
+                        tables[table_name] = []
+                    tables[table_name].append(f"{column_name} ({data_type})")
+                
+                return jsonify({
+                    'tables': list(tables.keys()),
+                    'total_tables': len(tables),
+                    'table_details': tables
+                })
         except Exception as e:
             return jsonify({'error': str(e)}), 500
-
-    @app.route('/api/debug/create-tables', methods=['POST'])
-    def force_create_tables():
+    
+    # Force create tables endpoint
+    @app.route('/api/debug/create-tables')
+    def create_tables():
         try:
-            # Drop all tables and recreate
-            db.drop_all()
-            db.create_all()
-            
-            # Get created tables
-            with db.engine.connect() as connection:
-                result = connection.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'"))
-                tables = [row[0] for row in result]
-            
-            return jsonify({
-                'message': 'Tables created successfully',
-                'tables': tables
-            })
+            with app.app_context():
+                # Drop all tables and recreate
+                db.drop_all()
+                db.create_all()
+                
+                # List created tables
+                with db.engine.connect() as connection:
+                    result = connection.execute(text("""
+                        SELECT table_name 
+                        FROM information_schema.tables 
+                        WHERE table_schema = 'public'
+                    """))
+                    tables = [row[0] for row in result]
+                
+                return jsonify({
+                    'message': 'Tables created successfully',
+                    'tables': tables
+                })
         except Exception as e:
             return jsonify({'error': str(e)}), 500
-
+    
     return app
 
-# Create the app
+# Create the app instance
 app = create_app()
 
 if __name__ == '__main__':
