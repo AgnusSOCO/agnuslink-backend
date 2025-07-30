@@ -2,40 +2,32 @@ from flask import Blueprint, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 import datetime
 
-# Create onboarding blueprint with lazy imports and JWT fixes
+# Create onboarding blueprint with proper JWT string handling
 onboarding_bp = Blueprint('onboarding', __name__)
 
 @onboarding_bp.route('/status', methods=['GET'])
 @jwt_required()
 def get_onboarding_status():
-    """Get user's onboarding status and next steps with proper JWT handling"""
+    """Get user's onboarding status and next steps with proper JWT string handling"""
     try:
         # Lazy imports to avoid circular import issues
         from database import db
         from models.user import User
         
-        # Get user identity with proper type handling
+        # Get user identity (now should be a string after auth.py fix)
         user_identity = get_jwt_identity()
         
         # Debug logging for JWT identity
         print(f"JWT Identity: {user_identity}, Type: {type(user_identity)}")
         
-        # Handle different JWT identity formats
-        if isinstance(user_identity, dict):
-            user_id = user_identity.get('id') or user_identity.get('user_id')
-        else:
-            user_id = user_identity
-            
-        # Ensure user_id is valid
-        if user_id is None:
-            return jsonify({'error': 'Invalid JWT token - no user ID found'}), 401
-            
-        # Convert to integer if it's a string (common with JWT)
+        # Convert string user_id back to integer for database query
         try:
-            if isinstance(user_id, str):
-                user_id = int(user_id)
-        except ValueError:
-            return jsonify({'error': 'Invalid user ID format in JWT token'}), 401
+            user_id = int(user_identity)
+        except (ValueError, TypeError):
+            return jsonify({
+                'error': f'Invalid user ID format in JWT token: {user_identity}',
+                'success': False
+            }), 401
         
         # Query user with proper error handling
         user = User.query.get(user_id)
@@ -76,13 +68,9 @@ def get_onboarding_status():
             'kyc_verified': kyc_verified,
             'agreement_signed': agreement_signed,
             'timestamp': datetime.datetime.utcnow().isoformat(),
+            'jwt_identity_received': user_identity,
             'jwt_identity_type': str(type(user_identity)),
-            'jwt_identity_value': str(user_identity),
-            'debug_info': {
-                'original_jwt_identity': user_identity,
-                'processed_user_id': user_id,
-                'user_found': True
-            }
+            'processed_user_id': user_id
         })
         
     except ImportError as e:
@@ -101,7 +89,7 @@ def get_onboarding_status():
 def test_onboarding():
     """Test endpoint to verify onboarding routes are working"""
     return jsonify({
-        'message': 'Onboarding routes with JWT fixes are working!',
+        'message': 'Onboarding routes with JWT string fixes are working!',
         'timestamp': datetime.datetime.utcnow().isoformat(),
         'routes_available': [
             '/status (requires JWT)',
@@ -110,12 +98,13 @@ def test_onboarding():
             '/user-info (requires JWT)'
         ],
         'blueprint_name': 'onboarding',
-        'import_status': 'database_and_user_model_imported_with_jwt_fixes',
+        'import_status': 'database_and_user_model_imported_with_jwt_string_fixes',
         'features': [
-            'JWT authentication with type handling',
+            'JWT authentication with string identity handling',
             'User model access',
             'Enhanced error handling',
-            'Debug information'
+            'Debug information',
+            'Proper type conversion'
         ]
     })
 
@@ -148,23 +137,14 @@ def onboarding_health():
 @onboarding_bp.route('/user-info', methods=['GET'])
 @jwt_required()
 def get_user_info():
-    """Get current user information with JWT fixes"""
+    """Get current user information with JWT string handling"""
     try:
         from database import db
         from models.user import User
         
-        # Get user identity with proper type handling
+        # Get user identity and convert to integer
         user_identity = get_jwt_identity()
-        
-        # Handle different JWT identity formats
-        if isinstance(user_identity, dict):
-            user_id = user_identity.get('id') or user_identity.get('user_id')
-        else:
-            user_id = user_identity
-            
-        # Convert to integer if needed
-        if isinstance(user_id, str):
-            user_id = int(user_id)
+        user_id = int(user_identity)
         
         user = User.query.get(user_id)
         
@@ -184,7 +164,7 @@ def get_user_info():
                 'agreement_signed': getattr(user, 'agreement_signed', False)
             },
             'jwt_debug': {
-                'original_identity': user_identity,
+                'received_identity': user_identity,
                 'processed_user_id': user_id,
                 'identity_type': str(type(user_identity))
             }
