@@ -1,217 +1,254 @@
-from flask import Blueprint, jsonify
+from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
-import datetime
+import logging
 
-# Create onboarding blueprint with correct import paths for Railway
+# Create blueprint
 onboarding_bp = Blueprint('onboarding', __name__)
+logger = logging.getLogger(__name__)
 
 @onboarding_bp.route('/status', methods=['GET'])
 @jwt_required()
 def get_onboarding_status():
-    """Get user's onboarding status and next steps with correct imports"""
+    """Get current user's onboarding status"""
     try:
-        # Lazy imports with correct paths for Railway deployment
+        # Get user identity from JWT token
+        user_identity = get_jwt_identity()
+        user_id = int(user_identity)
+        
+        # Import inside function to avoid circular imports
         from src.database import db
         from src.models.user import User
         
-        # Get user identity (now should be a string after auth.py fix)
-        user_identity = get_jwt_identity()
-        
-        # Debug logging for JWT identity
-        print(f"JWT Identity: {user_identity}, Type: {type(user_identity)}")
-        
-        # Convert string user_id back to integer for database query
-        try:
-            user_id = int(user_identity)
-        except (ValueError, TypeError):
-            return jsonify({
-                'error': f'Invalid user ID format in JWT token: {user_identity}',
-                'success': False
-            }), 401
-        
-        # Query user with proper error handling
+        # Get user from database
         user = User.query.get(user_id)
-        
         if not user:
-            return jsonify({'error': f'User not found with ID: {user_id}'}), 404
+            return jsonify({'error': 'User not found'}), 404
         
-        # Basic onboarding status logic
-        current_step = 'welcome'
-        progress = 0
+        # Determine onboarding progress
+        onboarding_status = {
+            'user_id': user.id,
+            'email': user.email,
+            'first_name': getattr(user, 'first_name', ''),
+            'last_name': getattr(user, 'last_name', ''),
+            'current_step': 1,
+            'total_steps': 3,
+            'steps': {
+                'personal_info': {
+                    'completed': bool(getattr(user, 'first_name', None) and getattr(user, 'last_name', None)),
+                    'step_number': 1,
+                    'title': 'Personal Information',
+                    'description': 'Complete your profile information'
+                },
+                'kyc_upload': {
+                    'completed': getattr(user, 'kyc_verified', False),
+                    'step_number': 2,
+                    'title': 'Identity Verification',
+                    'description': 'Upload your identification documents'
+                },
+                'agreement_pending': {
+                    'completed': getattr(user, 'agreement_signed', False),
+                    'step_number': 3,
+                    'title': 'Agreement Signing',
+                    'description': 'Our team will send you the agreement to sign'
+                }
+            },
+            'is_complete': getattr(user, 'agreement_signed', False),
+            'agreement_status': 'pending_team_action' if not getattr(user, 'agreement_signed', False) else 'completed'
+        }
         
-        # Determine progress based on user attributes (with safe attribute access)
-        agreement_signed = getattr(user, 'agreement_signed', False)
-        kyc_verified = getattr(user, 'kyc_verified', False)
-        onboarding_complete = getattr(user, 'onboarding_complete', False)
-        finders_fee_contract_signed = getattr(user, 'finders_fee_contract_signed', False)
-        
-        if onboarding_complete:
-            current_step = 'complete'
-            progress = 100
-        elif kyc_verified:
-            current_step = 'complete'
-            progress = 100
-        elif finders_fee_contract_signed:
-            current_step = 'kyc_upload'
-            progress = 60
+        # Calculate current step
+        if not onboarding_status['steps']['personal_info']['completed']:
+            onboarding_status['current_step'] = 1
+        elif not onboarding_status['steps']['kyc_upload']['completed']:
+            onboarding_status['current_step'] = 2
         else:
-            current_step = 'signature'
-            progress = 20
+            onboarding_status['current_step'] = 3
         
+        return jsonify(onboarding_status), 200
+        
+    except Exception as e:
+        logger.error(f"Error getting onboarding status: {str(e)}")
+        return jsonify({'error': f'Failed to get onboarding status: {str(e)}'}), 500
+
+@onboarding_bp.route('/update-personal-info', methods=['POST'])
+@jwt_required()
+def update_personal_info():
+    """Update user's personal information"""
+    try:
+        user_identity = get_jwt_identity()
+        user_id = int(user_identity)
+        
+        from src.database import db
+        from src.models.user import User
+        
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        data = request.get_json()
+        
+        # Update user information
+        if 'first_name' in data:
+            user.first_name = data['first_name']
+        if 'last_name' in data:
+            user.last_name = data['last_name']
+        if 'phone' in data:
+            user.phone = data['phone']
+        if 'address' in data:
+            user.address = data['address']
+        if 'city' in data:
+            user.city = data['city']
+        if 'state' in data:
+            user.state = data['state']
+        if 'zip_code' in data:
+            user.zip_code = data['zip_code']
+        
+        db.session.commit()
+        
+        logger.info(f"Personal info updated for user {user_id}")
         return jsonify({
             'success': True,
-            'current_step': current_step,
-            'progress': progress,
-            'user_id': user.id,
-            'user_email': user.email,
-            'user_name': f"{user.first_name} {user.last_name}",
-            'onboarding_complete': onboarding_complete,
-            'kyc_verified': kyc_verified,
-            'agreement_signed': agreement_signed,
-            'finders_fee_contract_signed': finders_fee_contract_signed,
-            'timestamp': datetime.datetime.utcnow().isoformat(),
-            'jwt_identity_received': user_identity,
-            'jwt_identity_type': str(type(user_identity)),
-            'processed_user_id': user_id
-        })
+            'message': 'Personal information updated successfully'
+        }), 200
         
-    except ImportError as e:
-        return jsonify({
-            'error': f'Import error: {str(e)}',
-            'success': False,
-            'import_attempted': ['src.database', 'src.models.user']
-        }), 500
     except Exception as e:
+        logger.error(f"Error updating personal info: {str(e)}")
+        return jsonify({'error': f'Failed to update personal info: {str(e)}'}), 500
+
+@onboarding_bp.route('/upload-kyc', methods=['POST'])
+@jwt_required()
+def upload_kyc_document():
+    """Handle KYC document upload"""
+    try:
+        user_identity = get_jwt_identity()
+        user_id = int(user_identity)
+        
+        from src.database import db
+        from src.models.user import User
+        
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        # For now, just mark KYC as submitted (manual review process)
+        # In a real implementation, you would handle file uploads here
+        
+        data = request.get_json()
+        document_type = data.get('document_type', 'drivers_license')
+        
+        # Mark KYC as submitted for manual review
+        user.kyc_submitted = True
+        user.kyc_document_type = document_type
+        user.kyc_submission_date = db.func.now()
+        
+        db.session.commit()
+        
+        logger.info(f"KYC document submitted for user {user_id}")
         return jsonify({
-            'error': f'Error: {str(e)}',
-            'success': False,
-            'error_type': str(type(e))
-        }), 500
+            'success': True,
+            'message': 'KYC document submitted successfully. Our team will review it shortly.',
+            'status': 'submitted_for_review'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error uploading KYC: {str(e)}")
+        return jsonify({'error': f'Failed to upload KYC: {str(e)}'}), 500
+
+@onboarding_bp.route('/complete-onboarding', methods=['POST'])
+@jwt_required()
+def complete_onboarding():
+    """Mark onboarding as complete and notify team"""
+    try:
+        user_identity = get_jwt_identity()
+        user_id = int(user_identity)
+        
+        from src.database import db
+        from src.models.user import User
+        
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Check if user has completed required steps
+        if not (getattr(user, 'first_name', None) and getattr(user, 'last_name', None)):
+            return jsonify({'error': 'Personal information not complete'}), 400
+        
+        if not getattr(user, 'kyc_submitted', False):
+            return jsonify({'error': 'KYC documents not submitted'}), 400
+        
+        # Mark onboarding as complete
+        user.onboarding_completed = True
+        user.onboarding_completion_date = db.func.now()
+        user.status = 'pending_agreement'  # Status indicating team needs to send agreement
+        
+        db.session.commit()
+        
+        # TODO: Send notification to team (email, Slack, etc.)
+        # This is where you would integrate with your team notification system
+        
+        logger.info(f"Onboarding completed for user {user_id} - {user.email}")
+        return jsonify({
+            'success': True,
+            'message': 'Onboarding completed! Our team will send you the agreement to sign shortly.',
+            'status': 'completed',
+            'next_step': 'wait_for_agreement'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error completing onboarding: {str(e)}")
+        return jsonify({'error': f'Failed to complete onboarding: {str(e)}'}), 500
+
+@onboarding_bp.route('/user-info', methods=['GET'])
+@jwt_required()
+def get_user_info():
+    """Get current user information"""
+    try:
+        user_identity = get_jwt_identity()
+        user_id = int(user_identity)
+        
+        from src.database import db
+        from src.models.user import User
+        
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        user_info = {
+            'id': user.id,
+            'email': user.email,
+            'first_name': getattr(user, 'first_name', ''),
+            'last_name': getattr(user, 'last_name', ''),
+            'phone': getattr(user, 'phone', ''),
+            'address': getattr(user, 'address', ''),
+            'city': getattr(user, 'city', ''),
+            'state': getattr(user, 'state', ''),
+            'zip_code': getattr(user, 'zip_code', ''),
+            'kyc_submitted': getattr(user, 'kyc_submitted', False),
+            'kyc_verified': getattr(user, 'kyc_verified', False),
+            'onboarding_completed': getattr(user, 'onboarding_completed', False),
+            'agreement_signed': getattr(user, 'agreement_signed', False),
+            'status': getattr(user, 'status', 'active')
+        }
+        
+        return jsonify(user_info), 200
+        
+    except Exception as e:
+        logger.error(f"Error getting user info: {str(e)}")
+        return jsonify({'error': f'Failed to get user info: {str(e)}'}), 500
 
 @onboarding_bp.route('/test', methods=['GET'])
 def test_onboarding():
     """Test endpoint to verify onboarding routes are working"""
     return jsonify({
-        'message': 'Onboarding routes with correct imports are working!',
-        'timestamp': datetime.datetime.utcnow().isoformat(),
-        'routes_available': [
-            '/status (requires JWT)',
-            '/test',
-            '/health',
-            '/user-info (requires JWT)'
-        ],
-        'blueprint_name': 'onboarding',
-        'import_status': 'src_prefixed_imports',
-        'features': [
-            'JWT authentication with string identity handling',
-            'User model access with src. imports',
-            'Enhanced error handling',
-            'Debug information',
-            'Proper type conversion'
+        'message': 'Onboarding routes are working!',
+        'version': 'manual_process_v1.0',
+        'endpoints': [
+            '/api/onboarding/status',
+            '/api/onboarding/update-personal-info',
+            '/api/onboarding/upload-kyc',
+            '/api/onboarding/complete-onboarding',
+            '/api/onboarding/user-info',
+            '/api/onboarding/test'
         ]
-    })
-
-@onboarding_bp.route('/health', methods=['GET'])
-def onboarding_health():
-    """Health check for onboarding blueprint"""
-    try:
-        from src.database import db
-        from src.models.user import User
-        
-        # Test database and model access
-        user_count = User.query.count()
-        
-        return jsonify({
-            'status': 'healthy',
-            'blueprint': 'onboarding',
-            'timestamp': datetime.datetime.utcnow().isoformat(),
-            'database_connected': True,
-            'user_model_accessible': True,
-            'total_users': user_count,
-            'import_method': 'src_prefixed'
-        })
-    except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'blueprint': 'onboarding',
-            'timestamp': datetime.datetime.utcnow().isoformat(),
-            'error': str(e),
-            'import_method': 'src_prefixed'
-        }), 500
-
-@onboarding_bp.route('/user-info', methods=['GET'])
-@jwt_required()
-def get_user_info():
-    """Get current user information with correct imports"""
-    try:
-        from src.database import db
-        from src.models.user import User
-        
-        # Get user identity and convert to integer
-        user_identity = get_jwt_identity()
-        user_id = int(user_identity)
-        
-        user = User.query.get(user_id)
-        
-        if not user:
-            return jsonify({'error': 'User not found'}), 404
-        
-        return jsonify({
-            'success': True,
-            'user': {
-                'id': user.id,
-                'email': user.email,
-                'first_name': user.first_name,
-                'last_name': user.last_name,
-                'created_at': user.created_at.isoformat() if hasattr(user, 'created_at') else None,
-                'onboarding_complete': getattr(user, 'onboarding_complete', False),
-                'kyc_verified': getattr(user, 'kyc_verified', False),
-                'agreement_signed': getattr(user, 'agreement_signed', False),
-                'finders_fee_contract_signed': getattr(user, 'finders_fee_contract_signed', False)
-            },
-            'jwt_debug': {
-                'received_identity': user_identity,
-                'processed_user_id': user_id,
-                'identity_type': str(type(user_identity))
-            }
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'error': f'Error getting user info: {str(e)}',
-            'success': False
-        }), 500
-
-@onboarding_bp.route('/start-signature', methods=['POST'])
-@jwt_required()
-def start_signature():
-    """Start the document signature process"""
-    try:
-        from src.database import db
-        from src.models.user import User
-        
-        # Get user identity and convert to integer
-        user_identity = get_jwt_identity()
-        user_id = int(user_identity)
-        
-        user = User.query.get(user_id)
-        
-        if not user:
-            return jsonify({'error': 'User not found'}), 404
-        
-        # For now, return a placeholder response
-        # This is where SignNow integration would go
-        return jsonify({
-            'success': True,
-            'message': 'Document signature process initiated',
-            'user_id': user_id,
-            'next_step': 'sign_document',
-            'timestamp': datetime.datetime.utcnow().isoformat()
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'error': f'Error starting signature: {str(e)}',
-            'success': False
-        }), 500
+    }), 200
 
