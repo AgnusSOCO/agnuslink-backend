@@ -236,9 +236,9 @@ def upload_kyc_document():
         upload_dir = os.path.join('/tmp', 'kyc_uploads')
         os.makedirs(upload_dir, exist_ok=True)
         
-        # Generate secure filename
+        # Generate secure filename - FIXED SYNTAX
         filename = secure_filename(file.filename)
-        unique_filename = f\"{user_id}_{document_type}_{uuid.uuid4().hex}_{filename}\"
+        unique_filename = f"{user_id}_{document_type}_{uuid.uuid4().hex}_{filename}"
         file_path = os.path.join(upload_dir, unique_filename)
         
         # Save file
@@ -329,7 +329,7 @@ def signnow_webhook():
         signature = DocumentSignature.query.filter_by(document_id=document_id).first()
         
         if not signature:
-            logger.warning(f\"Webhook received for unknown document: {document_id}\")
+            logger.warning(f"Webhook received for unknown document: {document_id}")
             return jsonify({'message': 'Document not found'}), 404
         
         # Update signature status based on event
@@ -343,17 +343,17 @@ def signnow_webhook():
                 user.agreement_signed = True
             
             db.session.commit()
-            logger.info(f\"Document {document_id} marked as signed via webhook\")
+            logger.info(f"Document {document_id} marked as signed via webhook")
         
         return jsonify({'message': 'Webhook processed successfully'})
         
     except Exception as e:
-        logger.error(f\"Error processing SignNow webhook: {e}\")
+        logger.error(f"Error processing SignNow webhook: {e}")
         return jsonify({'error': 'Internal server error'}), 500
 
 @onboarding_bp.route('/test', methods=['GET'])
 def test_onboarding():
-    \"\"\"Test endpoint to verify onboarding routes are working\"\"\"
+    """Test endpoint to verify onboarding routes are working"""
     return jsonify({
         'message': 'Onboarding routes are working',
         'signnow_available': signnow_service.is_available(),
